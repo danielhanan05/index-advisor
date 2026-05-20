@@ -1,0 +1,55 @@
+name: CI Checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check:
+    name: Check build and imports
+    runs-on: ubuntu-latest
+
+    env:
+      PYTHONPATH: backend
+      INDEX_ADVISOR_CONFIG_DIR: ./config
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build React frontend
+        run: |
+          python packaging/build_release.py
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall backend run_app.py packaging
+
+      - name: Check backend app can import
+        run: |
+          python -c "from index_advisor.api.main import app; print('FastAPI app import OK')"
