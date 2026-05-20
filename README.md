@@ -1,51 +1,32 @@
 # Database Index Advisor
 
-Database Index Advisor is a workload-aware index recommendation platform for PostgreSQL.
+Database Index Advisor is a local-first, workload-aware index recommendation platform for PostgreSQL.
 
-It connects to a PostgreSQL database, reads real query activity from `pg_stat_statements`, analyzes expensive queries, generates index candidates, validates them with `HypoPG`, and presents actionable recommendations through a web dashboard.
+It connects to PostgreSQL databases, reads real query activity from `pg_stat_statements`, analyzes expensive workload patterns, generates index candidates, validates them with `HypoPG`, and presents actionable recommendations through a React dashboard served by a FastAPI backend.
 
 The goal is simple:
 
-> Help DBAs and developers find the indexes that actually matter based on real workload evidence, not guesses.
+> Help DBAs and developers find indexes that actually matter based on real workload evidence, not guesses.
 
 ---
-
-## Project Layout
-
-The project is now engine-ready instead of PostgreSQL-package-only:
-
-```text
-backend/
-  index_advisor/
-    api/                  # FastAPI app and routers
-    storage/              # Product storage DB schema, migrations, settings, retention
-    targets/
-      base.py             # Common database-engine adapter contract
-      registry.py         # Engine registry and UI metadata
-      postgres/           # PostgreSQL collector/analyzer implementation
-    utils/
-frontend/                 # React/Vite UI for development; built into backend/index_advisor/web for packaging
-backend/index_advisor/web # Production React build served by FastAPI after npm run build
-config/                   # Optional development runtime config when INDEX_ADVISOR_CONFIG_DIR=./config
-main.py                   # Convenience CLI wrapper that loads backend/
-run_app.py                # Production/local launcher for packaged client installs
-packaging/                # Build helpers for React build + PyInstaller packaging
-```
-
-PostgreSQL is the only available engine in this version. MSSQL and Oracle are represented in the registry and setup UI as `coming_soon`, so adding them later is a new adapter/target implementation instead of another product rewrite.
 
 ## Table of Contents
 
 - [What It Does](#what-it-does)
 - [Why It Is Special](#why-it-is-special)
+- [Current Product Scope](#current-product-scope)
 - [Architecture](#architecture)
+- [Project Layout](#project-layout)
 - [Main Components](#main-components)
 - [Storage Database Architecture](#storage-database-architecture)
 - [Requirements](#requirements)
 - [Required PostgreSQL Extensions](#required-postgresql-extensions)
-- [How to Run the Backend](#how-to-run-the-backend)
-- [How to Run the Frontend](#how-to-run-the-frontend)
-- [Packaging and End-User Mode](#packaging-and-end-user-mode)
+- [Development Mode](#development-mode)
+- [Production / Local Package Mode](#production--local-package-mode)
+- [GitHub CI/CD and Releases](#github-cicd-and-releases)
+- [Runtime Configuration](#runtime-configuration)
+- [Storage Database Setup](#storage-database-setup)
+- [Local Security Model](#local-security-model)
 - [How to Add a Database Target](#how-to-add-a-database-target)
 - [How Recommendations Work](#how-recommendations-work)
 - [Current Recommendations](#current-recommendations)
@@ -59,7 +40,7 @@ PostgreSQL is the only available engine in this version. MSSQL and Oracle are re
 
 ## What It Does
 
-Database Index Advisor analyzes a PostgreSQL workload and recommends indexes that can improve query performance.
+Database Index Advisor analyzes PostgreSQL workload activity and recommends indexes that can improve query performance.
 
 It collects real workload statistics from `pg_stat_statements`, parses expensive queries, generates possible indexes, checks existing indexes, validates candidates with hypothetical indexes, and shows the best recommendations in a dashboard.
 
@@ -78,7 +59,7 @@ The product helps answer questions like:
 
 ## Why It Is Special
 
-Many simple index advisors stop at this logic:
+Many basic index advisors stop at this logic:
 
 ```text
 This query has a WHERE condition, so create an index.
@@ -92,13 +73,14 @@ It is designed around real DBA thinking:
 - Candidate indexes are validated with `HypoPG` before being recommended.
 - Parameterized queries are supported through sample-based validation.
 - Existing indexes are detected to avoid duplicate recommendations.
-- The advisor understands composite index patterns.
-- The advisor can recommend indexes for `ORDER BY + LIMIT` patterns.
-- The advisor can detect useful indexes for joins and LATERAL queries.
+- Composite index patterns are considered.
+- `ORDER BY + LIMIT` patterns are detected.
+- Join and LATERAL query patterns are analyzed.
 - Recommendations are separated into current actionable recommendations and historical recommendations.
-- The product shows alternative index options when relevant.
+- Alternative index options are shown when relevant.
+- The product keeps recommendation lifecycle state instead of only producing one-time suggestions.
 
-Example:
+Example query pattern:
 
 ```sql
 SELECT
@@ -118,7 +100,7 @@ WHERE c.country = $1
 LIMIT 100;
 ```
 
-A naive advisor might only notice `customers.country`.
+A naive advisor may only notice `customers.country`.
 
 This advisor can recognize that the inner LATERAL query benefits from:
 
@@ -131,9 +113,36 @@ Why this matters:
 
 - `customer_id` supports the lookup for each customer.
 - `order_date DESC` supports newest-order-first access.
-- `LIMIT 1` means PostgreSQL can stop after finding the first matching row.
+- `LIMIT 1` allows PostgreSQL to stop after finding the first matching row.
 
-In testing, this type of recommendation reduced a query from several seconds to a few milliseconds.
+---
+
+## Current Product Scope
+
+This version is a **local-first product**.
+
+The app runs locally on the user's machine:
+
+```text
+User computer
+  └── IndexAdvisor executable
+        ├── FastAPI backend
+        └── built React frontend
+```
+
+The app can connect to local or remote PostgreSQL databases, but the web UI is intended to be opened from the same machine that runs the backend:
+
+```text
+http://127.0.0.1:<port>
+```
+
+Remote shared web access, such as opening the UI from another computer with:
+
+```text
+http://server-name:8000
+```
+
+is not the supported V1 mode. Remote/server mode requires a separate authentication model and is planned for a later version.
 
 ---
 
@@ -162,14 +171,47 @@ React Frontend Dashboard
 
 The product separates the target database from the storage database.
 
-- The target database is the database being analyzed.
-- The storage database stores the advisor's internal state, collection runs, query stats, recommendations, and validation evidence.
+- **Target database**: the database being analyzed.
+- **Storage database**: the database where the advisor stores its own metadata, collection runs, query stats, recommendations, validation evidence, and settings.
+
+The app itself runs locally, but the databases can be local or remote.
+
+---
+
+## Project Layout
+
+```text
+backend/
+  index_advisor/
+    api/                  # FastAPI app and routers
+    security/             # local token auth and credential encryption
+    services/             # business workflows
+    storage/              # storage DB schema, migrations, repositories, retention
+    targets/
+      base.py             # common database-engine adapter contract
+      registry.py         # engine registry and UI metadata
+      postgres/           # PostgreSQL collector/analyzer implementation
+    utils/
+    web/                  # production React build served by FastAPI
+
+frontend/                 # React/Vite UI for development
+packaging/                # build helpers for React build + PyInstaller packaging
+.github/workflows/        # GitHub Actions CI and release workflows
+
+main.py                   # development CLI wrapper
+run_app.py                # production/local launcher for packaged installs
+requirements.txt          # Python dependencies
+```
+
+PostgreSQL is the only available engine in this version.
+
+MSSQL and Oracle are represented in the target registry and setup UI as `coming_soon`, so adding them later should be an adapter/target implementation instead of a full product rewrite.
 
 ---
 
 ## Main Components
 
-### 1. Target Database
+### Target Database
 
 The PostgreSQL database being analyzed.
 
@@ -181,13 +223,13 @@ The advisor connects to this database to collect:
 - query metadata
 - safe execution plans when possible
 
-The target database must have the required extensions installed.
+The target database must have the required PostgreSQL extensions installed.
 
 ---
 
-### 2. Storage Database
+### Storage Database
 
-The storage database stores the advisor's data.
+The storage database stores the advisor's internal data.
 
 It stores:
 
@@ -199,13 +241,15 @@ It stores:
 - query plans
 - recommendations
 - recommendation validations
-- lifecycle state
+- scheduler settings
+- retention settings
+- recommendation lifecycle state
 
-This keeps the product metadata separate from the database being analyzed.
+The storage database is created on the PostgreSQL host entered during first setup.
 
 ---
 
-### 3. Collector
+### Collector
 
 The collector reads workload and metadata from the target database.
 
@@ -217,15 +261,15 @@ It collects:
 - mean execution time
 - table scan/write statistics
 - existing index definitions
-- execution plans for safe non-parameterized queries
+- execution plans for safe queries when possible
 
-Parameterized queries are detected and skipped by direct plan capture because they need real bind values. They are later handled by the analyzer through sample validation.
+Parameterized queries are detected and handled carefully because they require real bind values.
 
 ---
 
-### 4. Analyzer
+### Analyzer
 
-The analyzer is the brain of the product.
+The analyzer is the recommendation engine.
 
 It:
 
@@ -250,13 +294,14 @@ The analyzer can detect patterns such as:
 
 ---
 
-### 5. FastAPI Backend
+### FastAPI Backend
 
 The backend exposes the API used by the frontend.
 
 It handles:
 
 - setup status
+- storage DB initialization
 - database target management
 - collect/analyze execution
 - current recommendations
@@ -264,11 +309,13 @@ It handles:
 - recommendation details
 - query stats
 - table stats
+- scheduler settings
+- retention settings
 - user revalidation with real parameter values
 
 ---
 
-### 6. React Frontend
+### React Frontend
 
 The frontend provides the user interface.
 
@@ -281,7 +328,12 @@ It includes pages for:
 - Query Stats
 - Table Stats
 - Database Target Setup
+- Settings
 - About
+
+In development, React runs through Vite.
+
+In production/package mode, React is built into static files and served directly by FastAPI.
 
 ---
 
@@ -293,13 +345,25 @@ The storage schema is created under:
 index_advisor
 ```
 
-Important tables:
+Important tables include:
 
 ### `database_targets`
 
 Stores the database targets configured by the user.
 
 Each target represents one PostgreSQL database that can be analyzed.
+
+---
+
+### `app_settings`
+
+Stores product settings such as:
+
+- scheduler enabled/disabled
+- scheduler run times
+- storage retention days
+
+These values can be edited from the frontend Settings page.
 
 ---
 
@@ -396,7 +460,7 @@ This keeps the `recommendations` table clean while preserving detailed proof.
 
 ## Requirements
 
-### Software
+### For Development
 
 - Python 3.12+
 - Node.js 18+
@@ -406,8 +470,17 @@ This keeps the `recommendations` table clean while preserving detailed proof.
 - React / Vite
 - psycopg
 - sqlglot
-- pg_stat_statements
-- HypoPG
+
+### For End Users
+
+End users do **not** need Python, Node.js, npm, or Vite when using the packaged release.
+
+They only need:
+
+- the correct package for their operating system
+- network access to the PostgreSQL host
+- database credentials
+- required PostgreSQL extensions on the target database
 
 ---
 
@@ -478,33 +551,345 @@ WHERE extname = 'hypopg';
 
 ---
 
-## How to Run the Backend
+## Development Mode
+
+Development mode uses two local servers:
+
+```text
+React / Vite: http://localhost:5173
+FastAPI:      http://localhost:8000
+```
+
+### 1. Install Python dependencies
 
 From the project root:
 
 ```bash
-cd index_rec_app
+python -m venv .venv
+```
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Linux/macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+Then:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 2. Configure the frontend for development
+
+Create:
+
+```text
+frontend/.env.development
+```
+
+with:
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+This is required because in development the frontend runs on port `5173` and the backend runs on port `8000`.
+
+### 3. Start the backend
+
+From the project root:
+
+```bash
 PYTHONPATH=backend python -m index_advisor.main api --reload
 ```
 
-The backend should start on:
+Or on Windows PowerShell:
 
-```text
-http://127.0.0.1:8000
+```powershell
+$env:PYTHONPATH = "backend"
+python -m index_advisor.main api --reload
 ```
 
-Health check:
+Backend health check:
 
 ```text
 http://127.0.0.1:8000/health
 ```
 
+### 4. Start the frontend
+
+Open another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:5173
+```
+
 ---
 
+## Production / Local Package Mode
+
+Production/package mode uses one local server:
+
+```text
+FastAPI serves both the React UI and the API.
+```
+
+The end user does **not** need:
+
+- Python
+- pip
+- Node.js
+- npm
+- Vite
+- `npm run dev`
+
+### Build React into FastAPI
+
+From the project root:
+
+```bash
+python packaging/build_release.py
+```
+
+This runs `npm run build` and copies:
+
+```text
+frontend/dist
+```
+
+into:
+
+```text
+backend/index_advisor/web
+```
+
+FastAPI then serves the built UI directly.
+
+### Run package mode without building an executable
+
+```bash
+python run_app.py
+```
+
+This starts the local FastAPI server and opens the browser automatically.
+
+### Build a PyInstaller package
+
+Install build dependencies:
+
+```bash
+pip install -r requirements.txt
+pip install -r packaging/requirements-build.txt
+```
+
+Build the package:
+
+```bash
+python packaging/build_release.py --pyinstaller
+```
+
+Output:
+
+```text
+dist/IndexAdvisor/
+```
+
+On Windows, run:
+
+```text
+dist/IndexAdvisor/IndexAdvisor.exe
+```
+
+On Linux, run:
+
+```bash
+./dist/IndexAdvisor/IndexAdvisor
+```
+
+### Important packaging notes
+
+Build Windows packages on Windows and Linux packages on Linux.
+
+Do not ship:
+
+```text
+node_modules/
+__pycache__/
+.git/
+config/storage.env
+config/credential.key
+config/admin_token.env
+frontend/dist/
+```
+
+The release artifact should be the generated package folder or archive, not the raw local working directory.
+
+---
+
+## GitHub CI/CD and Releases
+
+This project uses GitHub Actions instead of GitLab CI.
+
+### CI workflow
+
+The CI workflow checks that the project still builds correctly.
+
+File:
+
+```text
+.github/workflows/ci.yml
+```
+
+It runs on pushes and pull requests to `main`.
+
+It validates:
+
+- Python dependencies install
+- frontend dependencies install
+- React production build works
+- Python syntax is valid
+- FastAPI app can be imported
+
+CI does not create product files.
+
+### Release workflow
+
+The release workflow builds downloadable product packages.
+
+File:
+
+```text
+.github/workflows/release.yml
+```
+
+It runs when a version tag is pushed:
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```
+
+It builds:
+
+```text
+IndexAdvisor-Windows.zip
+index-advisor-linux.tar.gz
+```
+
+These files are uploaded to the GitHub Release for that tag.
+
+### Release assets
+
+GitHub also automatically adds:
+
+```text
+Source code (zip)
+Source code (tar.gz)
+```
+
+Those are source snapshots generated by GitHub. They are not the installable product.
+
+End users should download:
+
+```text
+Windows: IndexAdvisor-Windows.zip
+Linux:   index-advisor-linux.tar.gz
+```
+
+---
+
+## Runtime Configuration
+
+Runtime configuration is stored per user, not inside the installed application folder.
+
+### Windows
+
+```text
+%APPDATA%\IndexAdvisor
+```
+
+Example:
+
+```text
+C:\Users\<user>\AppData\Roaming\IndexAdvisor
+```
+
+### Linux/macOS
+
+```text
+~/.config/index-advisor
+```
+
+This folder stores local runtime files such as:
+
+```text
+storage.env
+credential.key
+admin_token.env
+```
+
+For development only, you can override the runtime config directory:
+
+```env
+INDEX_ADVISOR_CONFIG_DIR=./config
+```
+
+This is useful when you want local project config behavior while developing.
+
+---
+
+## Storage Database Setup
+
+For normal end-user installs, `STORAGE_DATABASE_URL` is optional.
+
+If it is not set, the backend starts in first-time setup mode and the frontend setup page asks the user for PostgreSQL connection details.
+
+When the user submits the setup form, the app creates or connects to a `storage_db` database on the PostgreSQL host entered by the user and applies the storage schema migrations.
+
+After successful setup, the backend writes the storage connection to local user config:
+
+```text
+storage.env
+```
+
+This lets the product reconnect to `storage_db` after restart without asking the user to manually create environment variables.
+
+Configuration priority:
+
+1. OS/environment `STORAGE_DATABASE_URL` — advanced/dev override.
+2. Local user config `storage.env` — created by frontend setup.
+3. Frontend setup mode — used when neither exists.
+
+The user/role used during first setup must be able to connect to the maintenance database, usually `postgres`, and must have permission to create a database.
+
+Optional settings:
+
+```env
+STORAGE_DATABASE_NAME=storage_db
+STORAGE_MAINTENANCE_DB=postgres
+```
+
+---
 
 ## Product Settings, Scheduler, and Retention
 
-Manual runs are still available, but the backend also starts an in-process scheduler when the FastAPI API starts.
+Manual runs are available, but the backend also starts an in-process scheduler when the FastAPI API starts.
 
 By default, the scheduler runs collect + analyze twice per day using the backend server local time:
 
@@ -514,7 +899,15 @@ SCHEDULER_RUN_TIMES=06:00,20:00
 STORAGE_RETENTION_DAYS=30
 ```
 
-After setup, end users can edit these values from the frontend **Settings** page. The values are saved in `index_advisor.app_settings` inside `storage_db`; users do not need to edit environment variables. Environment variables are only defaults/fallbacks before storage is configured.
+After setup, end users can edit these values from the frontend Settings page.
+
+The values are saved in:
+
+```text
+index_advisor.app_settings
+```
+
+inside `storage_db`.
 
 At each scheduled time, the scheduler:
 
@@ -522,8 +915,6 @@ At each scheduled time, the scheduler:
 2. Runs collect + analyze for each target sequentially.
 3. Runs storage retention cleanup after the scheduled cycle.
 4. Skips the scheduled run if another collect/analyze job is already running.
-
-Storage retention deletes old `collection_runs` older than `storage_retention_days`. PostgreSQL foreign keys with `ON DELETE CASCADE` remove the dependent query stats, table stats, index stats, query plans, recommendations, and recommendation validations.
 
 Settings API:
 
@@ -543,123 +934,70 @@ Example update:
 }
 ```
 
-If storage is not configured yet, the scheduler stays enabled but skips work until setup is completed from the frontend. The scheduler polls settings regularly, so schedule changes take effect without restarting the backend.
+If storage is not configured yet, the scheduler stays enabled but skips work until setup is completed from the frontend.
 
 ---
 
-## How to Run the Frontend
+## Local Security Model
 
-Open another terminal:
+This version is designed for local installation on DBA/developer machines.
 
-```bash
-cd index_rec_app/frontend
-npm install
-npm run dev
-```
+Dangerous write endpoints are protected by a local admin token:
 
-The frontend should start on:
+- `POST /targets`
+- `PUT /targets/{id}`
+- `DELETE /targets/{id}`
+- `POST /targets/{id}/test-connection`
+- `POST /targets/{id}/check-extensions`
+- `POST /runs/manual`
+- `POST /recommendations/{id}/revalidate`
+- `POST /recommendations/{id}/apply`
+- `PUT /settings`
+
+On first backend startup, the app creates local runtime files:
 
 ```text
-http://localhost:5173
+admin_token.env
+credential.key
 ```
+
+The React frontend creates a local HttpOnly admin cookie through:
+
+```text
+/auth/local-session
+```
+
+Normal local UI usage does not require manually copying the token.
+
+Target database passwords are encrypted before being stored in the storage database.
+
+The encryption key is kept locally in:
+
+```text
+credential.key
+```
+
+not in the storage database.
+
+### Local-only authentication behavior
+
+The local admin session bootstrap is intentionally allowed only from the same machine.
+
+That means this is supported:
+
+```text
+http://127.0.0.1:<port>
+```
+
+This is not supported in V1:
+
+```text
+http://server-name:8000
+```
+
+Remote/server mode requires a different login model and is planned for a future version.
 
 ---
-
-## Typical Local Development Flow
-
-Terminal 1:
-
-```bash
-cd index_rec_app
-PYTHONPATH=backend python -m index_advisor.main api --reload
-```
-
-Terminal 2:
-
-```bash
-cd index_rec_app/frontend
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:5173
-```
-
----
-
-
----
-
-## Packaging and End-User Mode
-
-The project supports two modes:
-
-```text
-Development mode:
-  React/Vite: http://localhost:5173
-  FastAPI:    http://localhost:8000
-
-Production/package mode:
-  FastAPI serves both the React UI and the API from one local server.
-```
-
-In development, keep using two terminals exactly as before:
-
-```bash
-python main.py api
-cd frontend
-npm run dev
-```
-
-For production/package mode, build the React app and copy it into the backend:
-
-```bash
-python packaging/build_release.py
-```
-
-This runs `npm run build` and copies `frontend/dist` into:
-
-```text
-backend/index_advisor/web/
-```
-
-FastAPI then serves the built UI directly. The end user does not need Node.js,
-Vite, or `npm run dev`.
-
-The packaging launcher is:
-
-```bash
-python run_app.py
-```
-
-It starts the local FastAPI server and opens the browser automatically. This is
-the entry point intended for PyInstaller/Nuitka packaging.
-
-To build a PyInstaller one-folder executable on the current OS:
-
-```bash
-pip install -r requirements.txt
-pip install -r packaging/requirements-build.txt
-python packaging/build_release.py --pyinstaller
-```
-
-Build Windows packages on Windows and Linux packages on Linux. Do not ship
-`node_modules`, `__pycache__`, `.git`, or runtime secrets.
-
-Runtime secrets are stored per user, not inside the installed application folder:
-
-```text
-Windows: %APPDATA%\IndexAdvisor
-Linux/macOS: ~/.config/index-advisor
-```
-
-For development only, you can force the old local project config behavior:
-
-```env
-INDEX_ADVISOR_CONFIG_DIR=./config
-```
 
 ## How to Add a Database Target
 
@@ -682,11 +1020,11 @@ In the UI:
 Example:
 
 ```text
-Name: Fake DB
-Host: localhost
+Name: Production Orders DB
+Host: prod-postgres.example.local
 Port: 5432
-Database name: fake_db
-Username: postgres
+Database name: orders
+Username: advisor_user
 Password: ********
 SSL mode: prefer
 ```
@@ -992,7 +1330,7 @@ After index:
 ~1ms to ~4ms
 ```
 
-This proves that the advisor can produce meaningful, workload-based performance improvements.
+This demonstrates that the advisor can produce meaningful, workload-based performance improvements.
 
 ---
 
@@ -1059,6 +1397,16 @@ Useful for evaluating write pressure before creating indexes.
 
 ---
 
+### Settings
+
+Allows editing:
+
+- scheduler enabled/disabled
+- scheduler run times
+- storage retention days
+
+---
+
 ## Backend API Overview
 
 Common endpoints:
@@ -1066,8 +1414,15 @@ Common endpoints:
 ```text
 GET  /health
 GET  /setup/status
+GET  /settings
+PUT  /settings
+GET  /scheduler/status
 GET  /targets
 POST /targets
+PUT  /targets/{id}
+DELETE /targets/{id}
+POST /targets/{id}/test-connection
+POST /targets/{id}/check-extensions
 POST /runs/manual
 GET  /runs/latest
 GET  /recommendations
@@ -1146,6 +1501,8 @@ This project is an MVP and still has room to grow.
 Known limitations:
 
 - PostgreSQL only
+- local app mode only
+- no supported remote/shared web mode yet
 - recommendations depend on available workload in `pg_stat_statements`
 - sampled bind values may not represent all production values
 - some aggregation-heavy queries require deeper analysis
@@ -1167,6 +1524,56 @@ Check that the backend is running:
 ```text
 http://127.0.0.1:8000/health
 ```
+
+If package mode uses a random free port, use the port printed in the terminal.
+
+---
+
+### Dev frontend calls the wrong URL
+
+If dev mode sends API requests to `localhost:5173`, create:
+
+```text
+frontend/.env.development
+```
+
+with:
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+Then restart Vite:
+
+```bash
+npm run dev
+```
+
+---
+
+### Remote browser shows `LOCAL_AUTH_REQUIRED`
+
+This version is local-only.
+
+Use the UI from the same machine as the backend:
+
+```text
+http://127.0.0.1:<port>
+```
+
+For temporary remote testing, use SSH tunneling:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 user@server
+```
+
+Then open on your local machine:
+
+```text
+http://127.0.0.1:8000
+```
+
+Remote/server mode is not supported in V1.
 
 ---
 
@@ -1252,13 +1659,19 @@ CREATE INDEX CONCURRENTLY ...;
 Compile Python:
 
 ```bash
-PYTHONPATH=backend python -m compileall backend/index_advisor
+PYTHONPATH=backend python -m compileall backend run_app.py packaging
 ```
 
-Run tests, if available:
+Build React for production/package mode:
 
 ```bash
-pytest -q
+python packaging/build_release.py
+```
+
+Build PyInstaller package:
+
+```bash
+python packaging/build_release.py --pyinstaller
 ```
 
 Run backend:
@@ -1274,6 +1687,12 @@ cd frontend
 npm run dev
 ```
 
+Run local package mode:
+
+```bash
+python run_app.py
+```
+
 ---
 
 ## Project Status
@@ -1282,11 +1701,15 @@ Current status:
 
 ```text
 MVP working
+Local package mode working
+GitHub CI/release automation working
 ```
 
 Implemented:
 
 - setup flow
+- local-first package mode
+- FastAPI serving built React
 - multiple database targets
 - workload collection
 - query analysis
@@ -1296,6 +1719,12 @@ Implemented:
 - recommendation history
 - lifecycle detection
 - frontend dashboard
+- scheduler settings
+- retention settings
+- encrypted target credentials
+- local admin token protection
+- GitHub CI checks
+- GitHub release assets for Windows/Linux
 
 ---
 
@@ -1303,6 +1732,11 @@ Implemented:
 
 Possible future improvements:
 
+- real Windows installer (`IndexAdvisorSetup.exe`)
+- Linux AppImage or `.deb`
+- code signing
+- automatic update checks
+- remote/server mode with explicit admin login
 - automatic before/after benchmark capture
 - index size estimation
 - better write overhead modeling
@@ -1316,13 +1750,15 @@ Possible future improvements:
 - SQL Server support
 - exportable recommendation reports
 - richer DBA explanations
-- production deployment with Docker/OpenShift
+- Docker/OpenShift deployment mode as a separate enterprise/server mode
 
 ---
 
 ## Portfolio Description
 
-Built a Database Index Advisor that analyzes `pg_stat_statements`, detects expensive query patterns, generates candidate indexes, validates them using HypoPG, and tracks recommendation lifecycle across analysis runs.
+Built a local-first Database Index Advisor that analyzes `pg_stat_statements`, detects expensive query patterns, generates candidate indexes, validates them using HypoPG, and tracks recommendation lifecycle across analysis runs.
+
+The product includes a FastAPI backend, React dashboard, local packaging with PyInstaller, encrypted target credentials, scheduler/retention settings, and GitHub Actions release builds for Windows and Linux.
 
 In a test workload, the advisor reduced a LATERAL latest-row query from approximately 3.5-4.5 seconds to around 1-4 milliseconds using a generated composite index on:
 
@@ -1334,78 +1770,4 @@ In a test workload, the advisor reduced a LATERAL latest-row query from approxim
 
 ## Short Description
 
-Database Index Advisor is a workload-aware index recommendation platform for PostgreSQL that analyzes real query activity, validates candidate indexes with HypoPG, and helps DBAs safely improve query performance.
-
-
-
-## Storage database setup
-
-For normal end-user installs, `STORAGE_DATABASE_URL` is optional. If it is not set, the backend starts in first-time setup mode and the frontend setup page asks the user for PostgreSQL connection details. When the user submits the setup form, the app creates/connects to a `storage_db` database on that same PostgreSQL host and applies the storage schema migrations.
-
-After successful setup, the backend writes the storage connection to local user config `storage.env`. This lets the product reconnect to `storage_db` after backend restart without asking the user to manually create environment variables. The file contains database credentials, is ignored by source control/ZIP packaging, and should not be shared.
-
-No global `~/.index_rec_advisor/storage.json` file is read or written.
-
-Configuration priority:
-
-1. OS/environment `STORAGE_DATABASE_URL` — advanced/dev override.
-2. Local user config `storage.env` — created by frontend setup.
-3. Frontend setup mode — used when neither exists.
-
-The user/role used during first setup must be able to connect to the maintenance database, usually `postgres`, and must have permission to create a database.
-
-Optional settings:
-
-```env
-STORAGE_DATABASE_NAME=storage_db
-STORAGE_MAINTENANCE_DB=postgres
-```
-
----
-
-## Local Security Model
-
-This version is designed for local installation on DBA/developer machines.
-Dangerous write endpoints are protected by a local admin token:
-
-- `POST /targets`
-- `PUT /targets/{id}`
-- `DELETE /targets/{id}`
-- `POST /targets/{id}/test-connection`
-- `POST /targets/{id}/check-extensions`
-- `POST /runs/manual`
-- `POST /recommendations/{id}/revalidate`
-- `POST /recommendations/{id}/apply`
-- `PUT /settings`
-
-On first backend startup, the app creates:
-
-```text
-config/admin_token.env
-config/credential.key
-```
-
-`admin_token.env` is used for local admin authorization. The React frontend creates a local HttpOnly admin cookie through `/auth/local-session`, so normal local UI usage does not require manually copying the token.
-
-Scripts or future installer tools can also send:
-
-```text
-X-Index-Advisor-Token: <value from config/admin_token.env>
-```
-
-Target database passwords are encrypted before being stored in the storage database. The encryption key is kept locally in the local config `credential.key`, not in the storage DB. Existing legacy plaintext rows remain readable for backward compatibility, but new/updated targets are saved encrypted.
-
-Do not share or commit files from `config/`. They are ignored by `.gitignore`.
-
-## Architecture Refactor Notes
-
-The API is now split more clearly:
-
-```text
-api/routers/             thin FastAPI endpoints
-services/                business workflows
-storage/repositories/    SQL/read-write access for storage DB
-security/                local token auth + credential encryption
-```
-
-The PostgreSQL analyzer was intentionally not rewritten in this refactor.
+Database Index Advisor is a local-first, workload-aware index recommendation platform for PostgreSQL that analyzes real query activity, validates candidate indexes with HypoPG, and helps DBAs safely improve query performance.
