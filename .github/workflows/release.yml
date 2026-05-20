@@ -73,7 +73,7 @@ jobs:
         run: |
           python packaging/build_release.py --pyinstaller
           cd dist
-          tar -czf ../index-advisor-linux.tar.gz index-advisor
+          tar -czf ../index-advisor-linux.tar.gz IndexAdvisor
           cd ..
 
       - name: Upload workflow artifact
