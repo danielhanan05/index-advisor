@@ -1,20 +1,98 @@
 # Database Index Advisor
 
-Database Index Advisor is a local-first, workload-aware index recommendation platform for PostgreSQL.
+Database Index Advisor is a ready-to-run PostgreSQL index recommendation product.
 
-It connects to PostgreSQL databases, reads real query activity from `pg_stat_statements`, analyzes expensive workload patterns, generates index candidates, validates them with `HypoPG`, and presents actionable recommendations through a React dashboard served by a FastAPI backend.
-
-The goal is simple:
+It analyzes real workload activity from `pg_stat_statements`, generates index candidates, validates them with `HypoPG`, and presents actionable recommendations in a local web dashboard.
 
 > Help DBAs and developers find indexes that actually matter based on real workload evidence, not guesses.
 
 ---
 
+## Get the App
+
+The easiest way to use Database Index Advisor is to download a packaged release.
+
+Open the GitHub Releases page:
+
+```text
+https://github.com/danielhanan05/index-advisor/releases
+```
+
+Download the correct product package:
+
+```text
+Windows: IndexAdvisor-Windows.zip
+Linux:   index-advisor-linux.tar.gz
+```
+
+Do **not** choose these automatic GitHub files unless you want the source code as a developer:
+
+```text
+Source code (zip)
+Source code (tar.gz)
+```
+
+Those files are created automatically by GitHub for every tag. They are not the ready-to-run product package.
+
+### Windows quick start
+
+1. Download `IndexAdvisor-Windows.zip` from the latest release.
+2. Extract the ZIP file.
+3. Open the extracted `IndexAdvisor` folder.
+4. Run `IndexAdvisor.exe`.
+5. The app starts and opens the dashboard in your browser.
+6. Complete the first-time setup.
+
+Windows users do **not** need to install Python, pip, Node.js, npm, Vite, or developer dependencies.
+
+### Linux quick start
+
+Download and run the Linux package:
+
+```bash
+wget https://github.com/danielhanan05/index-advisor/releases/download/v0.0.1/index-advisor-linux.tar.gz
+tar -xzf index-advisor-linux.tar.gz
+cd IndexAdvisor
+chmod +x IndexAdvisor
+./IndexAdvisor
+```
+
+The app prints a local URL, usually:
+
+```text
+http://127.0.0.1:8000
+```
+
+Open that URL in a browser on the same machine.
+
+### What happens when the app starts
+
+The packaged app contains everything needed to run the product locally:
+
+```text
+IndexAdvisor package
+  ├── FastAPI backend
+  ├── built React frontend
+  └── bundled Python runtime/dependencies
+```
+
+During first setup, the user enters PostgreSQL connection details. The app can connect to PostgreSQL databases running locally or remotely. The product itself runs on the user's machine, while the analyzed database can be on another host.
+
+Runtime configuration and secrets are stored per user:
+
+```text
+Windows: %APPDATA%\IndexAdvisor
+Linux:   ~/.config/index-advisor
+```
+
+---
+
 ## Table of Contents
 
+- [Get the App](#get-the-app)
 - [What It Does](#what-it-does)
 - [Why It Is Special](#why-it-is-special)
-- [Current Product Scope](#current-product-scope)
+- [Release Packages and Runtime Model](#release-packages-and-runtime-model)
 - [Architecture](#architecture)
 - [Project Layout](#project-layout)
 - [Main Components](#main-components)
@@ -117,34 +195,60 @@ Why this matters:
 
 ---
 
-## Current Product Scope
+## Release Packages and Runtime Model
 
-This version is a **local-first product**.
+Database Index Advisor is distributed through GitHub Releases as downloadable product packages.
 
-The app runs locally on the user's machine:
+Users should download one of these release assets:
 
 ```text
-User computer
-  └── IndexAdvisor executable
+Windows: IndexAdvisor-Windows.zip
+Linux:   index-advisor-linux.tar.gz
+```
+
+They should not download `Source code (zip)` or `Source code (tar.gz)` unless they are developers who want the repository source.
+
+### Windows package
+
+1. Download `IndexAdvisor-Windows.zip`.
+2. Extract the ZIP.
+3. Open the extracted `IndexAdvisor` folder.
+4. Run `IndexAdvisor.exe`.
+5. The dashboard opens in the browser.
+6. Complete first-time setup and start analyzing PostgreSQL workloads.
+
+The Windows package includes the backend, built frontend, Python runtime, and dependencies. The user does not run `pip install`, `npm install`, or `npm run dev`.
+
+### Linux package
+
+```bash
+wget https://github.com/danielhanan05/index-advisor/releases/download/v0.0.1/index-advisor-linux.tar.gz
+tar -xzf index-advisor-linux.tar.gz
+cd IndexAdvisor
+chmod +x IndexAdvisor
+./IndexAdvisor
+```
+
+Then open the local URL printed by the app.
+
+### Runtime model
+
+The app is installed and started locally, then connects to PostgreSQL using the connection details entered during setup.
+
+```text
+User machine
+  └── IndexAdvisor package
         ├── FastAPI backend
-        └── built React frontend
+        ├── React dashboard
+        └── local encrypted configuration
+              ↓
+        connects to local or remote PostgreSQL databases
 ```
 
-The app can connect to local or remote PostgreSQL databases, but the web UI is intended to be opened from the same machine that runs the backend:
+This gives the user a simple install-and-run experience while still allowing the analyzed PostgreSQL database to be remote.
 
-```text
-http://127.0.0.1:<port>
-```
+Shared browser access from other computers, such as `http://server-name:8000`, is not the default V1 package mode. A separate remote/server mode with dedicated authentication can be added later.
 
-Remote shared web access, such as opening the UI from another computer with:
-
-```text
-http://server-name:8000
-```
-
-is not the supported V1 mode. Remote/server mode requires a separate authentication model and is planned for a later version.
-
----
 
 ## Architecture
 
@@ -796,6 +900,13 @@ These files are uploaded to the GitHub Release for that tag.
 
 ### Release assets
 
+Each GitHub Release should include the product packages:
+
+```text
+IndexAdvisor-Windows.zip
+index-advisor-linux.tar.gz
+```
+
 GitHub also automatically adds:
 
 ```text
@@ -803,9 +914,9 @@ Source code (zip)
 Source code (tar.gz)
 ```
 
-Those are source snapshots generated by GitHub. They are not the installable product.
+Those are source snapshots generated by GitHub. They are useful for developers, but they are **not** the installable product.
 
-End users should download:
+End users should download only:
 
 ```text
 Windows: IndexAdvisor-Windows.zip
