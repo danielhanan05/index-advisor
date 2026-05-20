@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node/frontend
+node_modules/
+dist/
+build/
+
+# Local secrets/runtime config
+.env
+config/storage.env
+config/credential.key
+config/admin_token.env
+
+# VCS/editor
+.git/
+.vscode/
+.idea/
